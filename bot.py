@@ -27,6 +27,10 @@ FFMPEG_PATH = os.getenv(
 # Optional: path to a pre-recorded mp3 (e.g. a custom "Swagatham" clip or jingle)
 # to play before the spoken name, instead of generating that part with TTS.
 INTRO_AUDIO_PATH = os.getenv("INTRO_AUDIO_PATH", "").strip()
+# Optional: path to a cookies.txt file (exported from a real logged-in browser
+# session) so yt-dlp's YouTube requests aren't flagged as bot traffic —
+# especially needed when running on datacenter IPs like AWS/GCP.
+COOKIES_FILE = os.getenv("COOKIES_FILE", "").strip()
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing. Check your .env file.")
@@ -175,6 +179,8 @@ async def extract_audio_stream(query: str):
         "quiet": True,
         "default_search": "ytsearch",
     }
+    if COOKIES_FILE:
+        ydl_opts["cookiefile"] = COOKIES_FILE
 
     loop = asyncio.get_event_loop()
 
