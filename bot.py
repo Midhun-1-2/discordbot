@@ -178,6 +178,7 @@ async def extract_audio_stream(query: str):
         "noplaylist": True,
         "quiet": True,
         "default_search": "ytsearch",
+        "remote_components": {"ejs:github"},
     }
     if COOKIES_FILE:
         ydl_opts["cookiefile"] = COOKIES_FILE
@@ -189,7 +190,8 @@ async def extract_audio_stream(query: str):
             info = ydl.extract_info(query, download=False)
             if "entries" in info:
                 info = info["entries"][0]
-            return info["url"], info.get("title", "Unknown title")
+            headers = info.get("http_headers", {})
+            return info["url"], info.get("title", "Unknown title"), headers
 
     return await loop.run_in_executor(None, _extract)
 
@@ -230,7 +232,7 @@ async def play(ctx, *, query: str):
     await ctx.send(f"🔎 Looking up: {query}")
 
     try:
-        stream_url, title = await extract_audio_stream(query)
+        stream_url, title, headers = await extract_audio_stream(query)
     except Exception as e:
         await ctx.send(f"Couldn't play that: {e}")
         return
@@ -242,9 +244,17 @@ async def play(ctx, *, query: str):
     if voice_client.is_playing():
         voice_client.stop()
 
-    ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+    header_str = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+    before_options = [
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
+    ]
+    if header_str:
+        before_options += ["-headers", header_str]
+
     source = discord.FFmpegPCMAudio(
-        stream_url, executable=FFMPEG_PATH, before_options=ffmpeg_before_options
+        stream_url, executable=FFMPEG_PATH, before_options=before_options
     )
     voice_client.play(source)
     await ctx.send(f"▶️ Now playing: {title}")
