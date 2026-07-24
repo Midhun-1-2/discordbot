@@ -188,6 +188,25 @@ async def extract_audio_stream(query: str):
     return await loop.run_in_executor(None, _extract)
 
 
+async def _ensure_voice_connected(channel: discord.VoiceChannel, retries: int = 3):
+    """Connects/moves to a channel, retrying briefly if the initial handshake drops (error 4006)."""
+    guild = channel.guild
+    last_error = None
+    for attempt in range(retries):
+        voice_client = guild.voice_client
+        try:
+            if voice_client and voice_client.is_connected():
+                if voice_client.channel.id != channel.id:
+                    await voice_client.move_to(channel)
+                return voice_client
+            else:
+                return await channel.connect(timeout=15, reconnect=True)
+        except Exception as e:
+            last_error = e
+            await asyncio.sleep(1.5)
+    raise last_error
+
+
 @bot.command(name="play")
 async def play(ctx, *, query: str):
     if ctx.author.voice is None or ctx.author.voice.channel is None:
@@ -195,13 +214,12 @@ async def play(ctx, *, query: str):
         return
 
     channel = ctx.author.voice.channel
-    voice_client = ctx.guild.voice_client
 
-    if voice_client and voice_client.is_connected():
-        if voice_client.channel.id != channel.id:
-            await voice_client.move_to(channel)
-    else:
-        voice_client = await channel.connect()
+    try:
+        voice_client = await _ensure_voice_connected(channel)
+    except Exception as e:
+        await ctx.send(f"Couldn't connect to the voice channel: {e}")
+        return
 
     await ctx.send(f"🔎 Looking up: {query}")
 
@@ -209,6 +227,10 @@ async def play(ctx, *, query: str):
         stream_url, title = await extract_audio_stream(query)
     except Exception as e:
         await ctx.send(f"Couldn't play that: {e}")
+        return
+
+    if not voice_client.is_connected():
+        await ctx.send("Lost the voice connection, please try again.")
         return
 
     if voice_client.is_playing():
