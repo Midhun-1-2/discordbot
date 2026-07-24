@@ -171,29 +171,39 @@ async def on_voice_state_update(member, before, after):
     await guild_queues[guild_id].put((member, after.channel))
 
 
-async def extract_audio_stream(query: str):
-    """Resolves a URL or search text to a direct, streamable audio URL + title."""
+MUSIC_DIR = "music_downloads"
+
+
+async def download_audio(query: str):
+    """Downloads the audio to a local file and returns (filepath, title)."""
+    os.makedirs(MUSIC_DIR, exist_ok=True)
+
     ydl_opts = {
         "format": "bestaudio/best",
         "noplaylist": True,
         "quiet": True,
         "default_search": "ytsearch",
         "remote_components": {"ejs:github"},
+        "outtmpl": os.path.join(MUSIC_DIR, "%(id)s.%(ext)s"),
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+        }],
     }
     if COOKIES_FILE:
         ydl_opts["cookiefile"] = COOKIES_FILE
 
     loop = asyncio.get_event_loop()
 
-    def _extract():
+    def _download():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query, download=False)
+            info = ydl.extract_info(query, download=True)
             if "entries" in info:
                 info = info["entries"][0]
-            headers = info.get("http_headers", {})
-            return info["url"], info.get("title", "Unknown title"), headers
+            filepath = os.path.join(MUSIC_DIR, f"{info['id']}.mp3")
+            return filepath, info.get("title", "Unknown title")
 
-    return await loop.run_in_executor(None, _extract)
+    return await loop.run_in_executor(None, _download)
 
 
 async def _ensure_voice_connected(channel: discord.VoiceChannel, retries: int = 3):
@@ -229,10 +239,10 @@ async def play(ctx, *, query: str):
         await ctx.send(f"Couldn't connect to the voice channel: {e}")
         return
 
-    await ctx.send(f"🔎 Looking up: {query}")
+    await ctx.send(f"⬇️ Downloading: {query}")
 
     try:
-        stream_url, title, headers = await extract_audio_stream(query)
+        filepath, title = await download_audio(query)
     except Exception as e:
         await ctx.send(f"Couldn't play that: {e}")
         return
@@ -244,18 +254,7 @@ async def play(ctx, *, query: str):
     if voice_client.is_playing():
         voice_client.stop()
 
-    header_str = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
-    before_options = [
-        "-reconnect", "1",
-        "-reconnect_streamed", "1",
-        "-reconnect_delay_max", "5",
-    ]
-    if header_str:
-        before_options += ["-headers", header_str]
-
-    source = discord.FFmpegPCMAudio(
-        stream_url, executable=FFMPEG_PATH, before_options=before_options
-    )
+    source = discord.FFmpegPCMAudio(filepath, executable=FFMPEG_PATH)
     voice_client.play(source)
     await ctx.send(f"▶️ Now playing: {title}")
 
