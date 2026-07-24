@@ -6,6 +6,7 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 import edge_tts
+import yt_dlp
 
 print("Starting bot...")
 
@@ -30,11 +31,13 @@ INTRO_AUDIO_PATH = os.getenv("INTRO_AUDIO_PATH", "").strip()
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing. Check your .env file.")
 
-# Minimal intents: no Server Members / Message Content needed for this bot.
+# voice_states covers greetings; message_content is now needed too, since
+# music commands ("zyco play ...") require reading the text of messages.
 intents = discord.Intents.default()
 intents.voice_states = True
+intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="zyco ", intents=intents)
 
 # One queue per guild so simultaneous joins don't collide.
 guild_queues: dict[int, asyncio.Queue] = {}
@@ -162,6 +165,81 @@ async def on_voice_state_update(member, before, after):
     guild_id = after.channel.guild.id
     ensure_worker(guild_id)
     await guild_queues[guild_id].put((member, after.channel))
+
+
+async def extract_audio_stream(query: str):
+    """Resolves a URL or search text to a direct, streamable audio URL + title."""
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "noplaylist": True,
+        "quiet": True,
+        "default_search": "ytsearch",
+    }
+
+    loop = asyncio.get_event_loop()
+
+    def _extract():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(query, download=False)
+            if "entries" in info:
+                info = info["entries"][0]
+            return info["url"], info.get("title", "Unknown title")
+
+    return await loop.run_in_executor(None, _extract)
+
+
+@bot.command(name="play")
+async def play(ctx, *, query: str):
+    if ctx.author.voice is None or ctx.author.voice.channel is None:
+        await ctx.send("Join a voice channel first, then try again.")
+        return
+
+    channel = ctx.author.voice.channel
+    voice_client = ctx.guild.voice_client
+
+    if voice_client and voice_client.is_connected():
+        if voice_client.channel.id != channel.id:
+            await voice_client.move_to(channel)
+    else:
+        voice_client = await channel.connect()
+
+    await ctx.send(f"🔎 Looking up: {query}")
+
+    try:
+        stream_url, title = await extract_audio_stream(query)
+    except Exception as e:
+        await ctx.send(f"Couldn't play that: {e}")
+        return
+
+    if voice_client.is_playing():
+        voice_client.stop()
+
+    ffmpeg_before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+    source = discord.FFmpegPCMAudio(
+        stream_url, executable=FFMPEG_PATH, before_options=ffmpeg_before_options
+    )
+    voice_client.play(source)
+    await ctx.send(f"▶️ Now playing: {title}")
+
+
+@bot.command(name="stop")
+async def stop(ctx):
+    voice_client = ctx.guild.voice_client
+    if voice_client and voice_client.is_playing():
+        voice_client.stop()
+        await ctx.send("⏹️ Stopped.")
+    else:
+        await ctx.send("Nothing is playing right now.")
+
+
+@bot.command(name="leave")
+async def leave(ctx):
+    voice_client = ctx.guild.voice_client
+    if voice_client:
+        await voice_client.disconnect()
+        await ctx.send("👋 Left the voice channel.")
+    else:
+        await ctx.send("I'm not in a voice channel.")
 
 
 bot.run(TOKEN)
