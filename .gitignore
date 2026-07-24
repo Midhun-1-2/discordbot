@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+env/
+venv/
+audio/welcome_*.mp3
+audio/part_*.mp3
+audio/*.mp3.txt
